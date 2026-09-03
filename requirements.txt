@@ -1,0 +1,19 @@
+# Direct runtime dependencies only. Install a PyTorch build suitable for your
+# CPU/CUDA platform first when the default wheel is not appropriate.
+accelerate==1.14.0
+ddgs>=9.0,<10.0
+faiss-cpu==1.15.0
+gradio==6.26.0
+httpx==0.28.1
+langchain-community==0.4.2
+langchain-huggingface>=1.0,<2.0
+langchain-text-splitters==1.1.2
+langgraph==1.2.11
+mcp>=2.0,<3.0
+numpy==2.2.6
+pypdf>=5.0,<7.0
+sentence-transformers==6.0.1
+torch>=2.7,<3.0
+trafilatura>=2.0,<3.0
+transformers==5.16.1
+typing_extensions==4.16.0

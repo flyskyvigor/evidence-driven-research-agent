@@ -1,0 +1,40 @@
+# Python
+__pycache__/
+*.py[cod]
+*.so
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Local configuration and editor files
+.env
+.env.*
+!.env.example
+.vscode/
+.idea/
+.DS_Store
+
+# Runtime output
+*.log
+logs/
+outputs/
+cache/
+.cache/
+*.tmp
+
+# Generated local RAG indexes
+data/index/
+rag/index/
+*.faiss
+
+# Private local knowledge (keep only the public example)
+data/knowledge/*
+!data/knowledge/example.md
+
+# Models and checkpoints
+models/
+checkpoints/
+*.pt
+*.pth
+*.bin
+*.safetensors
