@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+import uuid
 from collections import Counter
 from textwrap import dedent
 from threading import Lock
@@ -13,11 +14,18 @@ import gradio as gr
 from research_agent.config import get_llm_model_path
 from research_agent.llm.qwen import QwenLLM
 from research_agent.workflow.graph import build_research_graph
+from research_agent.memory import (
+    ConversationMemoryStore,
+    LongTermMemoryManager,
+    create_sqlite_checkpointer,
+)
+from research_agent.observability import configure_logging
 
 
 logger = logging.getLogger(__name__)
 
 MAX_HISTORY_TURNS = 3
+MAX_UI_TURNS = 20
 MAX_ASSISTANT_CONTEXT_CHARS = 1800
 SOURCE_ORDER = ("web", "github", "paper", "local_rag")
 SOURCE_LABELS = {
@@ -40,20 +48,27 @@ EVIDENCE_HEADERS = [
 ]
 
 NODE_NAMES = {
+    "load_memory": "长期记忆召回",
     "planner": "研究规划",
     "retrieve": "多源检索",
     "score_evidence": "证据评分",
     "researcher": "研究员分析",
     "critic": "审查员评审",
     "finalize": "最终结论整理",
+    "persist_memory": "研究摘要入库",
 }
 
 
 def build_research_backend():
     """初始化并编译唯一一份研究后端。"""
     llm = QwenLLM(get_llm_model_path())
-    graph = build_research_graph(llm)
-    return llm, graph
+    long_term_memory = LongTermMemoryManager()
+    graph = build_research_graph(
+        llm,
+        checkpointer=create_sqlite_checkpointer(),
+        memory_manager=long_term_memory,
+    )
+    return llm, graph, ConversationMemoryStore()
 
 
 def _message_text(message: dict[str, Any]) -> str:
@@ -477,17 +492,46 @@ def _chat_status(current_node: str, result: dict[str, Any]) -> str:
     return f"正在执行{NODE_NAMES.get(current_node, current_node)}……"
 
 
-def run_research_stream(graph: Any, standalone_question: str):
+def run_research_stream(
+    graph: Any,
+    standalone_question: str,
+    session_id: str,
+    user_id: str = "",
+):
     """流式累积 LangGraph 节点更新，并逐节点产出中文进度。"""
     result: dict[str, Any] = {"question": standalone_question}
     completed_lines: list[str] = []
 
     for update in graph.stream(
-        {"question": standalone_question},
+        {
+            "question": standalone_question,
+            "session_id": session_id,
+            "user_id": user_id,
+            "run_id": uuid.uuid4().hex,
+        },
+        config={"configurable": {"thread_id": session_id}},
         stream_mode="updates",
     ):
         if not isinstance(update, dict):
             continue
+
+        if "__interrupt__" in update:
+            interrupts = update.get("__interrupt__") or []
+            payloads = []
+            for item in interrupts:
+                payloads.append(getattr(item, "value", item))
+            result["pending_approval"] = {
+                "type": "plan_approval",
+                "requests": payloads,
+                "session_id": session_id,
+            }
+            progress = (
+                "### 当前研究进度\n\n"
+                "⏸ 研究计划正在等待人工确认。\n\n"
+                f"可在CLI使用同一会话ID `{session_id}` 恢复。"
+            )
+            yield "__interrupt__", dict(result), progress
+            return
 
         for current_node, node_update in update.items():
             if current_node not in NODE_NAMES:
@@ -531,18 +575,42 @@ def build_evidence_table(result: dict[str, Any]) -> list[list[Any]]:
     for index, item in enumerate(evidence, 1):
         if not isinstance(item, dict):
             continue
+        display_title = item.get("title") or item.get("source_name", "")
+        content_type = "正文" if item.get("is_full_text") else "摘要"
+        if item.get("source_type") == "local_rag" and item.get("parent_id"):
+            content_type = (
+                "父块上下文（含表格）"
+                if "table" in str(item.get("content_types") or "")
+                else "父块上下文"
+            )
+            trace = []
+            page_start = item.get("page_start")
+            page_end = item.get("page_end")
+            if page_start:
+                page_label = f"第{page_start}页"
+                if page_end and page_end != page_start:
+                    page_label = f"第{page_start}-{page_end}页"
+                trace.append(page_label)
+            if item.get("section_title"):
+                trace.append(str(item["section_title"]))
+            if item.get("ocr_used"):
+                trace.append("OCR")
+            if trace:
+                display_title = f"{display_title}｜{' · '.join(trace)}"
+            if item.get("parser_warnings"):
+                content_type += "；⚠解析告警"
         rows.append([
             f"E{index}",
             SOURCE_LABELS.get(
                 item.get("source_type", "unknown"),
                 item.get("source_type", "未知"),
             ),
-            item.get("title") or item.get("source_name", ""),
+            display_title,
             _score(item.get("overall_score")),
             _score(item.get("relevance")),
             _score(item.get("semantic_relevance")),
             _score(item.get("authority")),
-            "正文" if item.get("is_full_text") else "摘要",
+            content_type,
             "✓" if index in cited_ids else "—",
             item.get("url", ""),
         ])
@@ -619,7 +687,9 @@ def render_trace(record: dict[str, Any] | None) -> tuple[Any, ...]:
     )
     workflow = (
         f"**研究轮次：** {result.get('round', 0)}  \n"
-        f"**证据是否充分：** {sufficient}"
+        f"**证据是否充分：** {sufficient}  \n"
+        f"**长期记忆召回：** {len(result.get('recalled_memories', []) or [])}条"
+        f"（{result.get('memory_recall_mode', 'disabled')}）"
     )
     progress = record.get("progress")
     if not progress:
@@ -695,16 +765,39 @@ def clear_conversation():
     )
 
 
-def make_message_handler(llm: QwenLLM, graph: Any, backend_lock: Lock):
+def make_message_handler(
+    llm: QwenLLM,
+    graph: Any,
+    backend_lock: Lock,
+    memory_store: ConversationMemoryStore,
+):
     def handle_message(
         question: str,
         history: list[dict[str, Any]] | None,
         records: list[dict[str, Any]] | None,
+        session_id: str,
+        user_id: str,
+        request: gr.Request,
     ):
         """随 LangGraph 节点进度同步更新对话与研究过程。"""
         question = (question or "").strip()
         history = list(history or [])
         records = list(records or [])
+        session_id = (session_id or "").strip() or request.session_hash
+        user_id = (user_id or "").strip()
+        if not records and session_id:
+            records = memory_store.load_session(session_id)
+            if records and not history:
+                for item in records:
+                    history.extend([
+                        {"role": "user", "content": item.get("user_question", "")},
+                        {
+                            "role": "assistant",
+                            "content": item.get("result", {}).get("final_answer", ""),
+                        },
+                    ])
+        history = history[-(MAX_UI_TURNS * 2):]
+        records = records[-MAX_UI_TURNS:]
 
         if not question:
             choices = [_turn_label(i) for i in range(1, len(records) + 1)]
@@ -721,7 +814,10 @@ def make_message_handler(llm: QwenLLM, graph: Any, backend_lock: Lock):
             return
 
         previous_history = list(history)
-        turn_number = len(records) + 1
+        turn_number = max(
+            [int(item.get("turn", 0) or 0) for item in records if isinstance(item, dict)]
+            or [0]
+        ) + 1
         pending_label = _turn_label(turn_number)
         pending_choices = [
             _turn_label(i) for i in range(1, turn_number + 1)
@@ -875,6 +971,8 @@ def make_message_handler(llm: QwenLLM, graph: Any, backend_lock: Lock):
                     for current_node, partial_result, progress in run_research_stream(
                         graph,
                         standalone_question,
+                        session_id,
+                        user_id,
                     ):
                         received_update = True
                         result = partial_result
@@ -901,8 +999,15 @@ def make_message_handler(llm: QwenLLM, graph: Any, backend_lock: Lock):
                         )
 
                     if not received_update or not result.get("final_answer"):
-                        raise RuntimeError("LangGraph stream ended without a final answer")
-                    final_answer = result["final_answer"]
+                        if result.get("pending_approval"):
+                            final_answer = (
+                                "研究计划正在等待人工确认。请使用页面中的会话 ID，"
+                                "在 CLI 执行 --resume approve 或 --resume reject 后继续。"
+                            )
+                        else:
+                            raise RuntimeError("LangGraph stream ended without a final answer")
+                    else:
+                        final_answer = result["final_answer"]
         except Exception:
             logger.exception("Research turn failed")
             history[-1] = {
@@ -947,6 +1052,15 @@ def make_message_handler(llm: QwenLLM, graph: Any, backend_lock: Lock):
             "topic_anchors": topic_anchors,
         }
         records.append(record)
+        history = history[-(MAX_UI_TURNS * 2):]
+        records = records[-MAX_UI_TURNS:]
+        memory_store.save_turn(
+            session_id,
+            turn_number,
+            question,
+            str(final_answer),
+            record,
+        )
         choices = [_turn_label(i) for i in range(1, len(records) + 1)]
         selected = choices[-1]
         yield (
@@ -961,10 +1075,14 @@ def make_message_handler(llm: QwenLLM, graph: Any, backend_lock: Lock):
     return handle_message
 
 
-def build_demo(llm: QwenLLM, graph: Any) -> gr.Blocks:
+def build_demo(
+    llm: QwenLLM,
+    graph: Any,
+    memory_store: ConversationMemoryStore,
+) -> gr.Blocks:
     """构建 Gradio 多轮对话页面。"""
     backend_lock = Lock()
-    handle_message = make_message_handler(llm, graph, backend_lock)
+    handle_message = make_message_handler(llm, graph, backend_lock, memory_store)
 
     with gr.Blocks(title="多源证据驱动研究智能体") as demo:
         gr.Markdown(
@@ -988,6 +1106,16 @@ def build_demo(llm: QwenLLM, graph: Any) -> gr.Blocks:
                     label="问题",
                     placeholder="请输入研究问题；后续可以直接追问……",
                     lines=3,
+                )
+                session_id = gr.Textbox(
+                    label="会话 ID（留空则使用当前浏览器会话；跨会话继续时填写原 ID）",
+                    placeholder="例如 interview-prep-001",
+                    lines=1,
+                )
+                user_id = gr.Textbox(
+                    label="用户 ID（可选；复用同一 ID 可跨会话召回长期记忆）",
+                    placeholder="例如 user-001；不填写则不启用长期记忆",
+                    lines=1,
                 )
                 with gr.Row():
                     send_button = gr.Button("发送", variant="primary")
@@ -1096,14 +1224,14 @@ def build_demo(llm: QwenLLM, graph: Any) -> gr.Blocks:
 
         send_button.click(
             fn=handle_message,
-            inputs=[message, chat_state, research_records],
+            inputs=[message, chat_state, research_records, session_id, user_id],
             outputs=message_outputs,
             concurrency_limit=1,
             concurrency_id="research_backend",
         )
         message.submit(
             fn=handle_message,
-            inputs=[message, chat_state, research_records],
+            inputs=[message, chat_state, research_records, session_id, user_id],
             outputs=message_outputs,
             concurrency_limit=1,
             concurrency_id="research_backend",
@@ -1125,9 +1253,9 @@ def build_demo(llm: QwenLLM, graph: Any) -> gr.Blocks:
 
 
 def main():
-    logging.basicConfig(level=logging.INFO)
-    llm, graph = build_research_backend()
-    demo = build_demo(llm, graph)
+    configure_logging(logging.INFO)
+    llm, graph, memory_store = build_research_backend()
+    demo = build_demo(llm, graph, memory_store)
     demo.queue(default_concurrency_limit=1, max_size=20)
     demo.launch(
         server_name="0.0.0.0",

@@ -1,81 +1,25 @@
-import asyncio
-import json
-import os
-import sys
-from pathlib import Path
+"""GitHub MCP 工具的领域适配器。"""
 
-from mcp import Client, StdioServerParameters
-from mcp.client.stdio import stdio_client
-from mcp.types import TextContent
+from __future__ import annotations
 
-from research_agent.config import get_web_proxy
-
-PROJECT_ROOT = Path(__file__).resolve().parents[2]
-SERVER_MODULE = "mcp_servers.github_server"
+from research_agent.tools.runtime import ToolRuntime, build_default_tool_runtime
 
 
 class MCPGitHubRetriever:
-    def search(self, query, max_results=3):
-        try:
-            result = asyncio.run(
-                self._call_tool(
-                    "search_repositories",
-                    {"query": query, "max_results": max_results}
-                )
-            )
-            return result if isinstance(result, list) else []
-        except Exception:
-            return []
+    def __init__(self, runtime: ToolRuntime | None = None) -> None:
+        self.runtime = runtime or build_default_tool_runtime()
+        self.last_result = None
 
-    def get_repository(self, full_name):
-        try:
-            result = asyncio.run(
-                self._call_tool(
-                    "get_repository",
-                    {"full_name": full_name}
-                )
-            )
-            return result if isinstance(result, dict) else {}
-        except Exception:
-            return {}
-
-    async def _call_tool(self, tool_name, arguments):
-        env = os.environ.copy()
-        proxy = get_web_proxy()
-        if proxy:
-            env["WEB_PROXY"] = proxy
-        else:
-            env.pop("WEB_PROXY", None)
-        env["PYTHONPATH"] = os.pathsep.join(
-            filter(None, [str(PROJECT_ROOT), env.get("PYTHONPATH")])
+    def search(self, query: str, max_results: int = 3) -> list[dict]:
+        self.last_result = self.runtime.execute(
+            "github.search_repositories",
+            {"query": query, "max_results": max_results},
         )
+        return self.last_result.data if self.last_result.success and isinstance(self.last_result.data, list) else []
 
-        server = StdioServerParameters(
-            command=sys.executable,
-            args=["-m", SERVER_MODULE],
-            env=env
+    def get_repository(self, full_name: str) -> dict:
+        self.last_result = self.runtime.execute(
+            "github.get_repository",
+            {"full_name": full_name},
         )
-
-        async with Client(stdio_client(server)) as client:
-            result = await client.call_tool(tool_name, arguments)
-
-        if result.is_error:
-            return None
-
-        if result.structured_content:
-            return self._unwrap(result.structured_content)
-
-        for item in result.content:
-            if isinstance(item, TextContent):
-                try:
-                    return self._unwrap(json.loads(item.text))
-                except json.JSONDecodeError:
-                    continue
-
-        return None
-
-    @classmethod
-    def _unwrap(cls, data):
-        if isinstance(data, dict) and "result" in data:
-            return cls._unwrap(data["result"])
-        return data
+        return self.last_result.data if self.last_result.success and isinstance(self.last_result.data, dict) else {}

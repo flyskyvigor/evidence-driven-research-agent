@@ -63,6 +63,7 @@ class CriticAgent:
             14. 逐个核对evidence_ids是否直接支持该Claim，不能把主题相关当作直接支持。
             15. valid_evidence_ids只能从该Claim原始evidence_ids中选择，不得新增编号。
             16. supported表示主张及限定条件被直接支持；partial表示只能支持更有限的表述；unsupported不得进入Verified Claims。
+            17. 如果证据对同一事实给出相反结论，必须写入evidence_conflicts；未解决冲突不能标记supported。
 
             Researcher的每个claim都有claim_id，例如C1、C2。
 
@@ -106,6 +107,16 @@ class CriticAgent:
                     }}
                 ],
                 "missing_perspectives": [],
+                "evidence_conflicts": [
+                    {{
+                        "claim_id": "C1",
+                        "topic": "发生冲突的具体事实",
+                        "evidence_for": ["E1"],
+                        "evidence_against": ["E2"],
+                        "status": "unresolved",
+                        "resolution": "为什么暂时无法消解"
+                    }}
+                ],
                 "followup_queries": [],
                 "followup_github_repos": [],
                 "followup_github_queries": [],
@@ -143,6 +154,7 @@ class CriticAgent:
                     if isinstance(item, dict)
                 ],
                 "missing_perspectives": ["逐Claim证据核验未完成"],
+                "evidence_conflicts": [],
                 "followup_queries": [],
                 "followup_github_repos": [],
                 "followup_github_queries": [],

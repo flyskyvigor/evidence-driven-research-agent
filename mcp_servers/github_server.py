@@ -1,4 +1,5 @@
 import httpx
+import re
 from mcp.server import MCPServer
 
 from research_agent.config import get_github_token, get_web_proxy
@@ -102,6 +103,12 @@ def _build_repository(client, item):
 @mcp.tool()
 def get_repository(full_name: str) -> dict:
     """Get an exact public GitHub repository."""
+    if not isinstance(full_name, str) or not re.fullmatch(
+        r"[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})/[A-Za-z0-9._-]{1,100}",
+        full_name.strip(),
+    ):
+        raise ValueError("full_name must use owner/repository format")
+    full_name = full_name.strip()
     try:
         with _client() as client:
             response = client.get(
@@ -109,15 +116,17 @@ def get_repository(full_name: str) -> dict:
                 headers=_headers()
             )
 
-            if response.status_code != 200:
+            if response.status_code == 404:
                 return {}
+            if response.status_code != 200:
+                raise RuntimeError(f"github_status_{response.status_code}")
 
             return _build_repository(
                 client,
                 response.json()
             )
-    except Exception:
-        return {}
+    except Exception as exc:
+        raise RuntimeError(f"github_get_repository_failed:{type(exc).__name__}") from exc
 
 
 @mcp.tool()
@@ -129,10 +138,10 @@ def search_repositories(
     if not isinstance(query, str) or not query.strip():
         return []
 
-    max_results = max(
-        1,
-        min(int(max_results), 5)
-    )
+    try:
+        max_results = max(1, min(int(max_results), 5))
+    except (TypeError, ValueError) as exc:
+        raise ValueError("max_results must be an integer") from exc
 
     try:
         with _client() as client:
@@ -148,7 +157,7 @@ def search_repositories(
             )
 
             if response.status_code != 200:
-                return []
+                raise RuntimeError(f"github_status_{response.status_code}")
 
             repositories = []
 
@@ -161,8 +170,8 @@ def search_repositories(
                 )
 
             return repositories
-    except Exception:
-        return []
+    except Exception as exc:
+        raise RuntimeError(f"github_search_failed:{type(exc).__name__}") from exc
 
 
 if __name__ == "__main__":

@@ -286,6 +286,7 @@ evidence_ids只能引用真实Evidence，且每个Claim最多5条。"""
         critique,
         unsupported_claims,
         missing_perspectives,
+        evidence_conflicts,
         sufficient,
         evidence
     ):
@@ -404,7 +405,22 @@ evidence_ids只能引用真实Evidence，且每个Claim最多5条。"""
             for text in gaps:
                 lines.append(f"- {text}")
 
-        if unsupported_texts or gaps or not sufficient:
+        if evidence_conflicts:
+            lines.extend(["", "### 冲突证据", ""])
+            for conflict in evidence_conflicts:
+                if not isinstance(conflict, dict):
+                    continue
+                topic = clean_text(conflict.get("topic")) or "同一事实存在相反证据"
+                citations = " ".join(
+                    f"[{item}]"
+                    for item in (
+                        conflict.get("evidence_for", [])
+                        + conflict.get("evidence_against", [])
+                    )
+                )
+                lines.append(f"- {topic}（{conflict.get('status', 'unresolved')}） {citations}".rstrip())
+
+        if unsupported_texts or gaps or evidence_conflicts or not sufficient:
             lines.extend(["", "### 下一步建议", ""])
             lines.append("- 如需继续研究，应优先围绕上述未覆盖维度补充直接、可核验的一手证据。")
 

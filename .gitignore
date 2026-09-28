@@ -26,6 +26,9 @@ cache/
 data/index/
 rag/index/
 *.faiss
+data/*.sqlite
+data/*.sqlite-shm
+data/*.sqlite-wal
 
 # Private local knowledge (keep only the public example)
 data/knowledge/*

@@ -1,0 +1,72 @@
+[
+  {
+    "id": "fact_lookup",
+    "category": "事实检索",
+    "question": "根据给定测试资料确认项目的许可证。",
+    "fixture": "offline_fact_sources",
+    "expected": {"required_source_types": ["web"], "max_rounds": 2}
+  },
+  {
+    "id": "multi_source",
+    "category": "多来源问题",
+    "question": "结合官方网页、论文和开源仓库比较一种 Agent 方法的能力与实现。",
+    "fixture": "offline_multi_source",
+    "expected": {"required_source_types": ["web", "paper", "github"], "max_rounds": 2}
+  },
+  {
+    "id": "evidence_conflict",
+    "category": "证据冲突",
+    "question": "两份资料对同一实验结论相反，应如何回答？",
+    "fixture": "offline_conflicting_sources",
+    "expected": {"expect_conflict": true, "max_rounds": 2}
+  },
+  {
+    "id": "insufficient_evidence",
+    "category": "资料不足",
+    "question": "仅凭没有实验细节的摘要判断方法在所有任务都有效。",
+    "fixture": "offline_insufficient_sources",
+    "expected": {"expect_insufficient": true, "max_rounds": 2}
+  },
+  {
+    "id": "tool_failure",
+    "category": "工具失败",
+    "question": "检索服务超时时给出保守回答。",
+    "fixture": "offline_timeout_tool",
+    "expected": {"expect_tool_failure": true, "expect_insufficient": true, "max_rounds": 2}
+  },
+  {
+    "id": "memory_isolation",
+    "category": "记忆隔离",
+    "question": "确认会话A的偏好不会出现在会话B。",
+    "fixture": "offline_two_sessions",
+    "expected": {"max_rounds": 2}
+  },
+  {
+    "id": "bilingual_retrieval",
+    "category": "中英文检索",
+    "question": "结合中英文资料分析 RAG reranker 的收益与代价。",
+    "fixture": "offline_bilingual_sources",
+    "expected": {"required_source_types": ["web", "paper"], "max_rounds": 2}
+  },
+  {
+    "id": "parent_child_retrieval",
+    "category": "父子索引",
+    "question": "从本地资料中检索一个位于长章节中间的具体术语，并返回完整上下文。",
+    "fixture": "offline_parent_child_corpus",
+    "expected": {"require_parent_child_trace": true, "max_rounds": 2}
+  },
+  {
+    "id": "long_term_memory_recall",
+    "category": "跨会话长期记忆",
+    "question": "在新会话中继续此前已完成的研究主题，但仍重新检索事实证据。",
+    "fixture": "offline_same_user_new_session",
+    "expected": {"expect_memory_recall": true, "max_rounds": 2}
+  },
+  {
+    "id": "academic_pdf_layout",
+    "category": "学术PDF解析",
+    "question": "从双栏论文的实验结果章节中定位表格结论，并保留页码与章节追溯。",
+    "fixture": "offline_two_column_paper",
+    "expected": {"require_pdf_trace": true, "max_rounds": 2}
+  }
+]

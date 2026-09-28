@@ -300,8 +300,11 @@ def search_papers(query: str, max_results: int = 4) -> list[dict]:
 
             papers = []
             seen = set()
+            provider_attempts = 0
+            provider_errors = 0
 
             for provider in providers:
+                provider_attempts += 1
                 try:
                     results = provider(
                         client,
@@ -309,6 +312,7 @@ def search_papers(query: str, max_results: int = 4) -> list[dict]:
                         max_results
                     )
                 except Exception:
+                    provider_errors += 1
                     continue
 
                 if not isinstance(results, list):
@@ -333,9 +337,13 @@ def search_papers(query: str, max_results: int = 4) -> list[dict]:
                     if len(papers) >= max_results:
                         return papers[:max_results]
 
+            if not papers and provider_attempts and provider_errors == provider_attempts:
+                raise RuntimeError("all_paper_providers_failed")
             return papers[:max_results]
-    except Exception:
-        return []
+    except RuntimeError:
+        raise
+    except Exception as exc:
+        raise RuntimeError(f"paper_search_failed:{type(exc).__name__}") from exc
 
 
 @mcp.tool()
@@ -359,8 +367,10 @@ def get_paper(paper_id: str) -> dict:
                 headers={"x-api-key": api_key}
             )
 
-            if response.status_code != 200:
+            if response.status_code == 404:
                 return {}
+            if response.status_code != 200:
+                raise RuntimeError(f"semantic_scholar_status_{response.status_code}")
 
             item = response.json()
             pdf = item.get("openAccessPdf") or {}
@@ -384,8 +394,10 @@ def get_paper(paper_id: str) -> dict:
                 "arxiv_id": external_ids.get("ArXiv", ""),
                 "doi": external_ids.get("DOI", "")
             }
-    except Exception:
-        return {}
+    except RuntimeError:
+        raise
+    except Exception as exc:
+        raise RuntimeError(f"paper_get_failed:{type(exc).__name__}") from exc
 
 
 if __name__ == "__main__":
